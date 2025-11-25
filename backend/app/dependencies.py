@@ -25,7 +25,7 @@ def user_required(current_user: Dict = Depends(get_current_user_details)):
     return current_user
 
 # Enforces Admin Role (used for Event CRUD)
-def admin_required(current_user: Dict = Depends(get_current_user_details)):
+def get_current_admin_user(current_user: Dict = Depends(get_current_user_details)):
     """
     Checks if the authenticated user has the 'admin' role.
     Raises: HTTPException 403 Forbidden if not admin.

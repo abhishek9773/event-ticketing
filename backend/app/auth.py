@@ -10,16 +10,14 @@ import os
 # Load environment variables
 load_dotenv()
 
-# --- Configuration (Pulled from .env or fallback) ---
 SECRET_KEY = os.getenv("SECRET_KEY", "your-fallback-secret-key") 
+
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 30))
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-# This object defines the dependency for extracting the token from the request header 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/v1/login/token")
 
-# --- Password Hashing ---
 
 def hash_password(password: str) -> str:
     """Hashes a plain text password using bcrypt."""
@@ -29,7 +27,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verifies a plain text password against a hashed one."""
     return pwd_context.verify(plain_password, hashed_password)
 
-# --- JWT Token Management ---
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     """Creates a signed JWT access token with expiration."""

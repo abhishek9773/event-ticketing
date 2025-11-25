@@ -1,21 +1,17 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import select
 from app import models, schemas
 from app.auth import hash_password, verify_password 
 from fastapi import HTTPException, status
 from typing import Optional, List
 
 
-# --- User/Auth CRUD ---
 
 def get_user_by_username(db: Session, username: str) -> Optional[models.User]:
     """Fetches a user by their unique username."""
     return db.query(models.User).filter(models.User.username == username).first()
 
+
 def create_user(db: Session, user: schemas.UserCreate, is_admin: bool = False) -> models.User:
-    """Creates a new user (handles both standard and initial admin creation)."""
-    
-    # Input Validation Check 1 (prevent duplicate users)
     if get_user_by_username(db, username=user.username):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -25,7 +21,7 @@ def create_user(db: Session, user: schemas.UserCreate, is_admin: bool = False) -
     hashed_pass = hash_password(user.password)
     db_user = models.User(
         username=user.username,
-        email = user.email,
+        email=user.email,
         hashed_password=hashed_pass,
         role="admin" if is_admin else "user"
     )
@@ -34,56 +30,75 @@ def create_user(db: Session, user: schemas.UserCreate, is_admin: bool = False) -
     db.refresh(db_user)
     return db_user
 
+
 def authenticate_user(db: Session, username: str, password: str) -> Optional[models.User]:
     """Authenticates a user for login."""
     user = get_user_by_username(db, username=username)
     if not user:
-        return False
-    # Input Validation Check 2 (verify password)
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail="user not found "
+        )
     if not verify_password(password, user.hashed_password):
-        return False
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail="password don't match"
+        )
     return user
 
 
 # --- Admin Event CRUD ---
 
 def get_event_by_id(db: Session, event_id: int) -> models.Event:
-    """Fetches a single event by ID, raising 404 if not found."""
+
     event = db.query(models.Event).filter(models.Event.id == event_id).first()
     if not event:
-         raise HTTPException(
+        raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Event not found"
         )
     return event
 
-def admin_create_event(db: Session, event: schemas.EventCreate) -> models.Event:
-    """Admin: Creates a new event."""
+
+def create_event(db: Session, event: schemas.EventCreate, organizer_id: int) -> models.Event:
+    """Creates a new event with tags (creating tags if they don’t exist)."""
+    tags = []
+    for tag_name in event.tags:
+        tag = db.query(models.Tag).filter(models.Tag.name == tag_name).first()
+        if not tag:
+            tag = models.Tag(name=tag_name)
+            db.add(tag)
+            tags.append(tag)
+        else:
+            tags.append(tag)
+
     db_event = models.Event(
         name=event.name,
         description=event.description,
         date=event.date,
         location=event.location,
         total_tickets=event.total_tickets,
-        available_tickets=event.total_tickets, # Initial available tickets equals total
-        price=event.price
+        available_tickets=event.total_tickets,
+        price=event.price,
+        organizer_id=organizer_id,
+        tags=tags
     )
     db.add(db_event)
     db.commit()
     db.refresh(db_event)
     return db_event
 
+
 def admin_update_event(db: Session, event_id: int, event_update: schemas.EventBase) -> models.Event:
     """Admin: Updates an existing event."""
     db_event = get_event_by_id(db, event_id)
     
- 
-    if event_update.total_tickets != db_event.total_tickets:
+    if event_update.total_tickets and event_update.total_tickets != db_event.total_tickets:
         diff = event_update.total_tickets - db_event.total_tickets
         db_event.available_tickets += diff
-        # NOTE: More robust logic would ensure available_tickets >= 0
+        if db_event.available_tickets < 0:
+            db_event.available_tickets = 0
     
-    # Update fields dynamically using Pydantic's model_dump
     update_data = event_update.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(db_event, key, value)
@@ -93,34 +108,42 @@ def admin_update_event(db: Session, event_id: int, event_update: schemas.EventBa
     db.refresh(db_event)
     return db_event
 
+
 def admin_delete_event(db: Session, event_id: int) -> dict:
-    """Admin: Deletes an event (soft delete by setting is_active=False)."""
+    """Admin: Soft deletes an event by setting is_active=False."""
     db_event = get_event_by_id(db, event_id)
-    # Industry best practice is soft deletion
-    db_event.is_active = False 
+    db_event.is_active = False
     db.commit()
     return {"detail": f"Event {event_id} successfully deactivated."}
+
 
 # --- User Ticket CRUD ---
 
 def get_all_active_events(db: Session, skip: int = 0, limit: int = 100) -> List[models.Event]:
     """Public: Fetches all active events for browsing."""
-    return db.query(models.Event).filter(models.Event.is_active == True).offset(skip).limit(limit).all()
+    return (
+        db.query(models.Event)
+        .filter(models.Event.is_active == True)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
 
 def user_book_ticket(db: Session, event_id: int, owner_id: int) -> models.Ticket:
-    """
-    User: Books a ticket, ensuring atomicity and availability.
-    """
-    db_event = get_event_by_id(db, event_id)
+    """User: Books a ticket, ensuring atomicity and availability."""
+    db_event = (
+        db.query(models.Event)
+        .filter(models.Event.id == event_id)
+        .with_for_update()
+        .first()
+    )
+    if not db_event:
+        raise HTTPException(status_code=404, detail="Event not found")
 
-    # 1. Check Availability
     if db_event.available_tickets <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This event is sold out."
-        )
+        raise HTTPException(status_code=409, detail="This event is sold out.")
 
-    # 2. Critical: Decrement available tickets and create ticket in one transaction
     db_event.available_tickets -= 1
     
     db_ticket = models.Ticket(
@@ -129,22 +152,60 @@ def user_book_ticket(db: Session, event_id: int, owner_id: int) -> models.Ticket
         status="booked"
     )
 
-    db.add(db_event) # Modify event
-    db.add(db_ticket) # Create ticket
+    try:
+        db.add(db_event)
+        db.add(db_ticket)
+        db.commit()
+        db.refresh(db_ticket)
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to book ticket.")
     
-    # Commit both changes simultaneously to ensure integrity
-    db.commit() 
-    db.refresh(db_ticket)
     return db_ticket
 
+
 def get_user_tickets(db: Session, owner_id: int) -> List[models.Ticket]:
-    """
-    User: Fetches all tickets owned by a specific user.
-    """
-    # Uses .options(joinedload(models.Ticket.event)) for efficient fetching (optional optimization)
-    tickets = (
-        db.query(models.Ticket)
-        .filter(models.Ticket.owner_id == owner_id)
+    """User: Fetches all tickets owned by a specific user."""
+    return db.query(models.Ticket).filter(models.Ticket.owner_id == owner_id).all()
+
+
+# --- Event Analytics ---
+
+def get_event_analytics(db: Session, event_id: int):
+    """Generates analytics report for a given event."""
+    event = get_event_by_id(db, event_id)
+
+    tickets_data = (
+        db.query(models.Ticket, models.User)
+        .join(models.User, models.Ticket.owner_id == models.User.id)
+        .filter(models.Ticket.event_id == event_id)
         .all()
     )
-    return tickets
+
+    total_tickets_sold = len(tickets_data)
+    total_revenue = total_tickets_sold * float(event.price)
+    tickets_remaining = event.total_tickets - total_tickets_sold
+    
+    attendees_map = {}
+    for ticket, user in tickets_data:
+        if user.id not in attendees_map:
+            attendees_map[user.id] = {
+                "user_name": user.username,
+                "user_email": user.email,
+                "tickets_purchased": 0
+            }
+        attendees_map[user.id]["tickets_purchased"] += 1
+    
+    attendees_list = list(attendees_map.values())
+
+    return {
+        "name": event.name,
+        "date": event.date,
+        "location": event.location,
+        "description": event.description,
+        "total_tickets_sold": total_tickets_sold,
+        "total_revenue": total_revenue,
+        "tickets_remaining": tickets_remaining,
+        "overall_capacity": event.total_tickets,
+        "attendees": attendees_list
+    }

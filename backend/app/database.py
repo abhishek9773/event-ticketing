@@ -4,7 +4,6 @@ from dotenv import load_dotenv
 import os
 from typing import Generator
 
-# Load environment variables from .env file
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -12,8 +11,6 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise Exception("DATABASE_URL environment variable is not set in .env file.")
 
-#  Create the SQLAlchemy Engine
-# The engine manages connection pools and the dialect/driver (psycopg2)
 engine = create_engine(DATABASE_URL)
 
 # 2. Create the Session Local class
@@ -34,8 +31,6 @@ def get_db() -> Generator:
     """
     db = SessionLocal()
     try:
-        # Provide the session to the route function
         yield db
     finally:
-        # Ensure the session is closed after the request is processed
         db.close()
