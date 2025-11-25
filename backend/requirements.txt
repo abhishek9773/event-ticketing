@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+python-jose[cryptography]
+passlib[bcrypt]
+sqlalchemy
+psycopg2-binary  # Use -binary for easy local setup with Postgres
+python-dotenv
+python-multipart
+bcrypt==4.0.1
+email-validator
